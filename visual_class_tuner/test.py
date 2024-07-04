@@ -12,11 +12,12 @@ settings = ClassifierSettings(
     recall=0.95,
     specificity=0.95,
     prob_distn=beta(0.25, 0.25),
-    default_threshold=0.75,
+    threshold=0.75,
 )
 classifier = MockClassifier.from_metrics(settings=settings)
 
 # %% -
+classifier.threshold = 0.8
 p = classifier.violin_view()
 p.save("temp.pdf")
 
