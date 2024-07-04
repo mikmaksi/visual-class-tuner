@@ -1,12 +1,14 @@
-from typing import ClassVar
+from typing import Literal
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotnine as pn
 from pydantic import Field
 from scipy.stats import beta
 from scipy.stats._distn_infrastructure import rv_continuous_frozen
-from sklearn.metrics import ConfusionMatrixDisplay
+from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, roc_curve
 
 from visual_class_tuner import rng
 from visual_class_tuner.pydantic_config import Model
@@ -19,26 +21,54 @@ class ClassifierSettings(Model):
     precision: float  # TP/(TP+FP)
     recall: float  # TP/(TP+FN)
     specificity: float  # TN/(TN+FP)
-    N: int = 1000
+    N: int = 1000  # number of samples
     prob_distn: rv_continuous_frozen = beta(a=0.4, b=0.4)
     threshold: float = 0.5
 
 
 class MockClassifier(Model):
-    y_true: np.ndarray = Field(repr=False)
-    y_prob: np.ndarray = Field(repr=False)
-    threshold: float  # this can be reset to recalculate y_pred
+    """MockClassifier.
+
+    Args:
+        y_true (np.ndarray): true class labels {0, 1} for each sample.
+        y_prob (np.ndarray): probabilities returned by the classifier for each sample.
+        threshold (float): threshold for converting probabilities into predicted labels.
+
+    y_ture, y_prob and threshold uniquely define the mock classifier. To generate from performance metrics,
+    use @cls.from_metrics
+    """
+
+    y_true: np.ndarray[int] = Field(repr=False)
+    y_prob: np.ndarray[float] = Field(repr=False)
+    threshold: float
 
     @classmethod
-    def from_metrics(cls, settings: ClassifierSettings):
+    def from_metrics(cls, settings: ClassifierSettings) -> "MockClassifier":
+        """Instantiate from a set of classification performance metrics
+
+        Args:
+            settings (ClassifierSettings): a settings dataclass
+
+        Returns:
+            A mock classifier.
+        """
         class_counts = cls.calculate_class_counts(settings.precision, settings.recall, settings.specificity, settings.N)
         y_true, y_prob = cls.make_samples(class_counts, settings.prob_distn, settings.threshold)
         return cls(y_true=y_true, y_prob=y_prob, threshold=settings.threshold)
 
     @staticmethod
     def calculate_class_counts(p: float, r: float, s: float, N: int) -> dict[str, int]:
-        """Solve a system of linear equations for TP, FP, TN and FN"""
-        # solve system of equations
+        """Solve a system of linear equations for TP, FP, TN and FN
+
+        Args:
+            p (float): precision
+            r (float): recall
+            s (float): specificity
+            N (int): number of samples
+
+        Returns:
+            dict[str, int]: dictionary of class labels and associated counts
+        """
         X = np.array([[1, 1, 1, 1], [p - 1, p, 0, 0], [r - 1, 0, 0, r], [0, s, s - 1, 0]])
         Y = np.array([N, 0, 0, 0])
         class_counts = np.linalg.solve(X, Y)
@@ -51,7 +81,16 @@ class MockClassifier(Model):
         prob_distn: rv_continuous_frozen,
         threshold: float,
     ) -> (np.ndarray[int], np.ndarray[int], np.ndarray[float]):
-        """Generate samples corresponding to the desired class counts"""
+        """Generate samples corresponding to the desired class counts.
+
+        Args:
+            class_counts (dict[str, int]): dictionary of class labels and associated counts
+            prob_distn (rv_continuous_frozen): probability distribution to sample probabilities from
+            threshold (float): probability threshold separating the positive and negative classes
+
+        Returns:
+            (np.ndarray[int], np.ndarray[int], np.ndarray[float]):
+        """
 
         # sample values from the probability distribution
         prob_samples = prob_distn.rvs(sum(class_counts.values()) * 3)
@@ -73,25 +112,49 @@ class MockClassifier(Model):
 
     @property
     def y_pred(self) -> np.ndarray[int]:
+        """Return predicted labels based on current threshold.
+
+        Args:
+            None
+
+        Returns:
+            np.ndarray[int]:
+        """
         return (self.y_prob >= self.threshold).astype(int)
 
     @property
-    def labels(self) -> np.ndarray[str]:
-        labels = np.empty(len(self.y_true), dtype="U2")
+    def class_names(self) -> np.ndarray[str]:
+        """Assign class names based on y_true and y_pred labels
+
+        Args:
+            None
+
+        Returns:
+            np.ndarray[str]:
+        """
+        class_names = np.empty(len(self.y_true), dtype="U2")
         matches = np.array(self.y_true) == np.array(self.y_pred)
         is_positive = np.array(self.y_true) == 1
-        labels[matches & is_positive] = "TP"
-        labels[~matches & is_positive] = "FN"
-        labels[~matches & ~is_positive] = "FP"
-        labels[matches & ~is_positive] = "TN"
-        return labels
+        class_names[matches & is_positive] = "TP"
+        class_names[~matches & is_positive] = "FN"
+        class_names[~matches & ~is_positive] = "FP"
+        class_names[matches & ~is_positive] = "TN"
+        return class_names
 
     def to_df(self) -> pd.DataFrame:
-        samples_df = np.array([self.labels, self.y_true, self.y_pred, self.y_prob]).T
+        """Create a DataFrame summary by sample.
+
+        Args:
+            None
+
+        Returns:
+            pd.DataFrame:
+        """
+        samples_df = np.array([self.class_names, self.y_true, self.y_pred, self.y_prob]).T
         samples_df = pd.DataFrame(samples_df, columns=["class", "actual", "predicted", "prob"]).astype({"prob": float})
 
         # set categories
-        samples_df["class"] = pd.Categorical(samples_df["class"], categories=np.unique(self.labels))
+        samples_df["class"] = pd.Categorical(samples_df["class"], categories=np.unique(self.class_names))
         for label_type in ["actual", "predicted"]:
             samples_df[label_type] = pd.Categorical(samples_df[label_type], categories=["1", "0"])
 
@@ -99,19 +162,19 @@ class MockClassifier(Model):
 
     @property
     def TP(self) -> int:
-        return (self.labels == "TP").sum()
+        return (self.class_names == "TP").sum()
 
     @property
     def FP(self) -> int:
-        return (self.labels == "FP").sum()
+        return (self.class_names == "FP").sum()
 
     @property
     def TN(self) -> int:
-        return (self.labels == "TN").sum()
+        return (self.class_names == "TN").sum()
 
     @property
     def FN(self) -> int:
-        return (self.labels == "FN").sum()
+        return (self.class_names == "FN").sum()
 
     @property
     def PP(self) -> int:
@@ -141,14 +204,41 @@ class MockClassifier(Model):
     def npv(self):
         return self.TN / self.PN
 
-    def plot_confusion_matrix(self):
-        display = ConfusionMatrixDisplay(self.confusion_matrix)
-        return display
+    def plot_confusion_matrix(self, engine: Literal["plotly", "matplotlib"] = "plotly"):
+        if engine == "plotly":
+            p = px.imshow(
+                img=self.confusion_matrix,
+                x=["1", "0"],
+                y=["1", "0"],
+                text_auto=True,
+                labels={"x": "Predicted label", "y": "True label"},
+            )
+            p.update_xaxes(side="top")
+            p = p.update_coloraxes(showscale=False)
+            p.write_html("temp.html")
+            return p
+        elif engine == "matplotlib":
+            display = ConfusionMatrixDisplay(self.confusion_matrix)
+            _ = display.plot()
+            return display.figure_
 
-    def violin_view(self):
+    def violin_view(self, engine: Literal["plotly", "plotnine"] = "plotly"):
         """Plot distribution of probabilities as a violing plot"""
-        p = pn.ggplot(self.to_df(), pn.aes("actual", "prob"))
-        p = p + pn.geom_violin()
-        p = p + pn.geom_sina(mapping=pn.aes(color="class"), position=pn.position_dodge(width=0))
-        p = p + pn.geom_hline(yintercept=self.threshold, linetype="dashed")
+        if engine == "plotly":
+            p = px.violin(data_frame=self.to_df(), x="actual", y="prob", color="class", violinmode="overlay")
+            strip = px.strip(data_frame=self.to_df(), x="actual", y="prob", color="class")
+            p.add_traces(list(strip.select_traces()))
+            p.add_hline(y=self.threshold, line_dash="dash")
+            p.write_html("temp.html")
+        elif engine == "plotnine":
+            p = pn.ggplot(self.to_df(), pn.aes("actual", "prob"))
+            p = p + pn.geom_violin()
+            p = p + pn.geom_sina(mapping=pn.aes(color="class"), position=pn.position_dodge(width=0))
+            p = p + pn.geom_hline(yintercept=self.threshold, linetype="dashed")
         return p
+
+    def plot_roc_curve(self):
+        fpr, tpr, thresholds = roc_curve(self.y_true, self.y_prob)
+        roc_df = pd.DataFrame({"fpr": fpr, "tpr": tpr, "threshold": thresholds})
+        fig = px.line(data_frame=roc_df, x="fpr", y="tpr", markers=True, hover_data={"threshold": ":0.3f"})
+        return fig

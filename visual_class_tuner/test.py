@@ -1,8 +1,10 @@
 import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
+import plotly.express as px
 from scipy.stats import beta, rv_continuous
 from scipy.stats._distn_infrastructure import rv_continuous_frozen
-from sklearn.metrics import ConfusionMatrixDisplay
+from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, roc_curve
 
 from visual_class_tuner.classes import ClassifierSettings, MockClassifier
 
@@ -19,9 +21,13 @@ classifier = MockClassifier.from_metrics(settings=settings)
 # %% -
 classifier.threshold = 0.8
 p = classifier.violin_view()
-p.save("temp.pdf")
+# p.save("temp.pdf")
+p.write_html("temp.html")
 
 # %% -
-display = classifier.plot_confusion_matrix()
-display.plot()
-plt.show()
+fig = classifier.plot_confusion_matrix()
+fig.write_html("temp.html")
+
+# %% -
+fig = classifier.plot_roc_curve()
+fig.write_html("temp.html")
