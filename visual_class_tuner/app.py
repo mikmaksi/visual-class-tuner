@@ -22,58 +22,39 @@ rng = np.random.default_rng()
 external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css", "assets/styles.css"]
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-confusion_matrix_table = dbc.Row(
-    [
-        dbc.Row(
-            [
-                dbc.Col("Total population"),
-                dbc.Col("Predicted Positive (PP)"),
-                dbc.Col("Predicted Positive (PN)"),
-                dbc.Col(),
-                dbc.Col(),
-            ],
-            className="cm-table header",
-        ),
-        dbc.Row(
-            [
-                dbc.Col("Positive (P)", className="cm-table header"),
-                dbc.Col(id="tbl-tp"),
-                dbc.Col(id="tbl-fn"),
-                dbc.Col(id="tbl-recall"),
-                dbc.Col(id="tbl-fnr"),
-            ]
-        ),
-        dbc.Row(
-            [
-                dbc.Col("Negative (N)", className="cm-table header"),
-                dbc.Col(id="tbl-fp"),
-                dbc.Col(id="tbl-tn"),
-                dbc.Col(id="tbl-fpr"),
-                dbc.Col(id="tbl-specificity"),
-            ]
-        ),
-        dbc.Row(
-            [
-                dbc.Col(className="cm-table header"),
-                dbc.Col(id="tbl-precision"),
-                dbc.Col(id="tbl-for"),
-                dbc.Col(),
-                dbc.Col(),
-            ]
-        ),
-        dbc.Row(
-            [
-                dbc.Col(className="cm-table header"),
-                dbc.Col(id="tbl-fdr"),
-                dbc.Col(id="tbl-npv"),
-                dbc.Col(),
-                dbc.Col(),
-            ]
-        ),
+# confusion matrix table layout element
+confusion_matrix_table = {
+    "Total population": [html.Strong(s) for s in ["Positive (P)", "Negative (N)", "", "", ""]],
+    "Predicted Positive (PP)": [
+        html.Span(id="tbl-tp"),
+        html.Span(id="tbl-fp"),
+        html.Span(id="tbl-precision"),
+        html.Span(id="tbl-fdr"),
+        "",
     ],
-    className="cm-table",
-)
-
+    "Predicted Negative (PN)": [
+        html.Span(id="tbl-fn"),
+        html.Span(id="tbl-tn"),
+        html.Span(id="tbl-fomr"),
+        html.Span(id="tbl-npv"),
+        "",
+    ],
+    " ": [
+        html.Span(id="tbl-recall"),
+        html.Span(id="tbl-fpr"),
+        "",
+        "",
+        "",
+    ],
+    "  ": [
+        html.Span(id="tbl-fnr"),
+        html.Span(id="tbl-specificity"),
+        "",
+        "",
+        "",
+    ],
+}
+confusion_matrix_table = pd.DataFrame(confusion_matrix_table)
 
 # build the layout
 app.layout = dbc.Container(
@@ -118,7 +99,7 @@ app.layout = dbc.Container(
         html.Hr(),
         dbc.Row(
             [
-                dbc.Col(confusion_matrix_table, style={"align-content": "center"}, width=6),
+                dbc.Col(dbc.Table.from_dataframe(confusion_matrix_table), width=6),
                 dbc.Col(dcc.Graph(id="violins-plot"), width=6),
             ]
         ),
@@ -178,7 +159,7 @@ def update_classifier(threshold: float, classifier_dict: dict):
     Output("tbl-fpr", "children"),
     Output("tbl-specificity", "children"),
     Output("tbl-precision", "children"),
-    Output("tbl-for", "children"),
+    Output("tbl-fomr", "children"),
     Output("tbl-fdr", "children"),
     Output("tbl-npv", "children"),
     Input("classifier", "data"),
