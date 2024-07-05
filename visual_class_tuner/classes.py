@@ -1,14 +1,14 @@
-from typing import Literal
+from typing import Literal, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotnine as pn
-from pydantic import Field
+from pydantic import Field, field_serializer, field_validator
 from scipy.stats import beta
 from scipy.stats._distn_infrastructure import rv_continuous_frozen
-from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, roc_curve
+from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, precision_recall_curve, roc_curve
 
 from visual_class_tuner import rng
 from visual_class_tuner.pydantic_config import Model
@@ -22,8 +22,14 @@ class ClassifierSettings(Model):
     recall: float  # TP/(TP+FN)
     specificity: float  # TN/(TN+FP)
     N: int = 1000  # number of samples
+    threshold: float = 0.5  # default seting for the classifier for prediction
+
+    # probability generation from TP, FN, FP, TN counts
+
+    # distribution for sampling predicted probability values
     prob_distn: rv_continuous_frozen = beta(a=0.4, b=0.4)
-    threshold: float = 0.5
+    # threshold to split prob_distn by for additional control over distribution sampling
+    generation_threshold: float = 0.5
 
 
 class MockClassifier(Model):
@@ -42,6 +48,17 @@ class MockClassifier(Model):
     y_prob: np.ndarray[float] = Field(repr=False)
     threshold: float
 
+    @field_serializer("y_true", "y_prob")
+    def serialize_np_array(self, np_array: np.ndarray):
+        return np_array.tolist()
+
+    @field_validator("y_true", "y_prob", mode="before")
+    @classmethod
+    def convert_to_np_array(cls, value: list) -> np.ndarray:
+        if isinstance(value, list):
+            value = np.array(value)
+        return value
+
     @classmethod
     def from_metrics(cls, settings: ClassifierSettings) -> "MockClassifier":
         """Instantiate from a set of classification performance metrics
@@ -53,8 +70,9 @@ class MockClassifier(Model):
             A mock classifier.
         """
         class_counts = cls.calculate_class_counts(settings.precision, settings.recall, settings.specificity, settings.N)
-        y_true, y_prob = cls.make_samples(class_counts, settings.prob_distn, settings.threshold)
-        return cls(y_true=y_true, y_prob=y_prob, threshold=settings.threshold)
+        y_true, y_prob = cls.make_samples(class_counts, settings.prob_distn, settings.generation_threshold)
+        classifier = cls(y_true=y_true, y_prob=y_prob, threshold=settings.threshold)
+        return classifier
 
     @staticmethod
     def calculate_class_counts(p: float, r: float, s: float, N: int) -> dict[str, int]:
@@ -79,7 +97,7 @@ class MockClassifier(Model):
     def make_samples(
         class_counts: dict[str, int],
         prob_distn: rv_continuous_frozen,
-        threshold: float,
+        generation_threshold: float,
     ) -> (np.ndarray[int], np.ndarray[int], np.ndarray[float]):
         """Generate samples corresponding to the desired class counts.
 
@@ -94,8 +112,8 @@ class MockClassifier(Model):
 
         # sample values from the probability distribution
         prob_samples = prob_distn.rvs(sum(class_counts.values()) * 3)
-        pos_prob_samples = prob_samples[prob_samples >= threshold]
-        neg_prob_samples = prob_samples[prob_samples < threshold]
+        pos_prob_samples = prob_samples[prob_samples >= generation_threshold]
+        neg_prob_samples = prob_samples[prob_samples < generation_threshold]
 
         # generate a DataFrame of class labels and probabilities
         y_true = []
@@ -133,7 +151,7 @@ class MockClassifier(Model):
             np.ndarray[str]:
         """
         class_names = np.empty(len(self.y_true), dtype="U2")
-        matches = np.array(self.y_true) == np.array(self.y_pred)
+        matches = self.y_true == self.y_pred
         is_positive = np.array(self.y_true) == 1
         class_names[matches & is_positive] = "TP"
         class_names[~matches & is_positive] = "FN"
@@ -201,17 +219,45 @@ class MockClassifier(Model):
         return (self.TP + self.TN) / len(self.y_true)
 
     @property
+    def recall(self):
+        return self.TP / self.P
+
+    @property
+    def fnr(self):
+        return self.FN / self.P
+
+    @property
+    def fpr(self):
+        return self.FP / self.N
+
+    @property
+    def specificity(self):
+        return self.TN / self.N
+
+    @property
+    def precision(self):
+        return self.TP / self.PP
+
+    @property
+    def fomr(self):
+        return self.FN / self.PN
+
+    @property
+    def fdr(self):
+        return self.FP / self.PP
+
+    @property
     def npv(self):
         return self.TN / self.PN
 
     def plot_confusion_matrix(self, engine: Literal["plotly", "matplotlib"] = "plotly"):
         if engine == "plotly":
             p = px.imshow(
-                img=self.confusion_matrix,
+                img=self.confusion_matrix.T,
                 x=["1", "0"],
                 y=["1", "0"],
                 text_auto=True,
-                labels={"x": "Predicted label", "y": "True label"},
+                labels={"x": "True label", "y": "Predicted label"},
             )
             p.update_xaxes(side="top")
             p = p.update_coloraxes(showscale=False)
@@ -222,7 +268,7 @@ class MockClassifier(Model):
             _ = display.plot()
             return display.figure_
 
-    def violin_view(self, engine: Literal["plotly", "plotnine"] = "plotly"):
+    def plot_violins(self, engine: Literal["plotly", "plotnine"] = "plotly"):
         """Plot distribution of probabilities as a violing plot"""
         if engine == "plotly":
             p = px.violin(data_frame=self.to_df(), x="actual", y="prob", color="class", violinmode="overlay")
@@ -238,7 +284,19 @@ class MockClassifier(Model):
         return p
 
     def plot_roc_curve(self):
-        fpr, tpr, thresholds = roc_curve(self.y_true, self.y_prob)
+        fpr, tpr, thresholds = roc_curve(self.y_true, self.y_prob, drop_intermediate=True)
         roc_df = pd.DataFrame({"fpr": fpr, "tpr": tpr, "threshold": thresholds})
         fig = px.line(data_frame=roc_df, x="fpr", y="tpr", markers=True, hover_data={"threshold": ":0.3f"})
+        thresh_idx = np.argmin(np.abs(thresholds - self.threshold))
+        fig = fig.add_hline(y=tpr[thresh_idx], line_dash="dash")
+        fig = fig.add_vline(x=fpr[thresh_idx], line_dash="dash")
+        return fig
+
+    def plot_precision_recall_curve(self):
+        precision, recall, thresholds = precision_recall_curve(self.y_true, self.y_prob, drop_intermediate=True)
+        pr_df = pd.DataFrame({"precision": precision[:-1], "recall": recall[:-1], "threshold": thresholds})
+        fig = px.line(data_frame=pr_df, x="recall", y="precision", markers=True, hover_data={"threshold": ":0.3f"})
+        thresh_idx = np.argmin(np.abs(thresholds - self.threshold))
+        fig = fig.add_hline(y=precision[thresh_idx], line_dash="dash")
+        fig = fig.add_vline(x=recall[thresh_idx], line_dash="dash")
         return fig

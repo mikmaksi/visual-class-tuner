@@ -13,14 +13,14 @@ settings = ClassifierSettings(
     precision=0.95,
     recall=0.95,
     specificity=0.95,
+    threshold=0.5,
     prob_distn=beta(0.25, 0.25),
-    threshold=0.75,
 )
 classifier = MockClassifier.from_metrics(settings=settings)
 
 # %% -
 classifier.threshold = 0.8
-p = classifier.violin_view()
+p = classifier.plot_violins()
 # p.save("temp.pdf")
 p.write_html("temp.html")
 
@@ -31,3 +31,11 @@ fig.write_html("temp.html")
 # %% -
 fig = classifier.plot_roc_curve()
 fig.write_html("temp.html")
+
+# %% -
+fig = classifier.plot_precision_recall_curve()
+fig.write_html("temp.html")
+
+# %% -
+# (de)serialization
+MockClassifier(**classifier.model_dump())

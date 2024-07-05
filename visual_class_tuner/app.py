@@ -1,157 +1,223 @@
-from dash import Dash, html, dcc, callback, Output, Input, State, ALL
-from dash import callback_context as ctx
-import plotly.express as px
-import plotly.graph_objects as go
-import pandas as pd
-import numpy as np
-import dash_bootstrap_components as dbc
 import re
 
+import dash_bootstrap_components as dbc
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from dash import ALL, Dash, Input, Output, State, callback
+from dash import callback_context as ctx
+from dash import dcc, html
+from scipy import stats
+from scipy.stats import beta
 from scipy.stats._continuous_distns import _distn_names as cont_distns
 from scipy.stats._discrete_distns import _distn_names as disc_distns
-from scipy import stats
+
+from visual_class_tuner.classes import ClassifierSettings, MockClassifier
 
 # random number generator
 rng = np.random.default_rng()
 
 # create the app
-external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
+external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css", "assets/styles.css"]
 app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+confusion_matrix_table = dbc.Row(
+    [
+        dbc.Row(
+            [
+                dbc.Col("Total population"),
+                dbc.Col("Predicted Positive (PP)"),
+                dbc.Col("Predicted Positive (PN)"),
+                dbc.Col(),
+                dbc.Col(),
+            ],
+            className="cm-table header",
+        ),
+        dbc.Row(
+            [
+                dbc.Col("Positive (P)", className="cm-table header"),
+                dbc.Col(id="tbl-tp"),
+                dbc.Col(id="tbl-fn"),
+                dbc.Col(id="tbl-recall"),
+                dbc.Col(id="tbl-fnr"),
+            ]
+        ),
+        dbc.Row(
+            [
+                dbc.Col("Negative (N)", className="cm-table header"),
+                dbc.Col(id="tbl-fp"),
+                dbc.Col(id="tbl-tn"),
+                dbc.Col(id="tbl-fpr"),
+                dbc.Col(id="tbl-specificity"),
+            ]
+        ),
+        dbc.Row(
+            [
+                dbc.Col(className="cm-table header"),
+                dbc.Col(id="tbl-precision"),
+                dbc.Col(id="tbl-for"),
+                dbc.Col(),
+                dbc.Col(),
+            ]
+        ),
+        dbc.Row(
+            [
+                dbc.Col(className="cm-table header"),
+                dbc.Col(id="tbl-fdr"),
+                dbc.Col(id="tbl-npv"),
+                dbc.Col(),
+                dbc.Col(),
+            ]
+        ),
+    ],
+    className="cm-table",
+)
+
 
 # build the layout
 app.layout = dbc.Container(
     [
-        dbc.Row(
-            [
-                dbc.Col(dbc.InputGroupText("Select distribution"), width={"size": 2}),
-                dbc.Col(
-                    html.Div(dcc.Dropdown(options=cont_distns + disc_distns, value="norm", id="dropdown-selection"))
-                ),
-            ],
-            className="g-0",
-        ),
-        html.H1("General parameters"),
+        html.H1("Build the classifier"),
         dbc.Stack(
             children=[
-                dbc.InputGroup([dbc.InputGroupText("size"), dbc.Input(id="distn-size", value=1000, type="number")]),
-                dbc.InputGroup([dbc.InputGroupText("loc"), dbc.Input(id="distn-loc", value=0, type="number")]),
-                dbc.InputGroup([dbc.InputGroupText("scale"), dbc.Input(id="distn-scale", value=1, type="number")]),
-                dbc.InputGroup([dbc.InputGroupText("nbins"), dbc.Input(id="distn-nbins", value=None, type="number")]),
-            ],
-            id="general-distn-params",
+                dbc.InputGroup(
+                    [
+                        dbc.InputGroupText("Precision", class_name="text"),
+                        dbc.Input(id="precision-input", value=0.9, type="number", min=0, max=1, step=0.05),
+                    ]
+                ),
+                dbc.InputGroup(
+                    [
+                        dbc.InputGroupText("Recall", class_name="text"),
+                        dbc.Input(id="recall-input", value=0.9, type="number", min=0, max=1, step=0.05),
+                    ]
+                ),
+                dbc.InputGroup(
+                    [
+                        dbc.InputGroupText("Specificity", class_name="text"),
+                        dbc.Input(id="specificity-input", value=0.9, type="number", min=0, max=1, step=0.05),
+                    ]
+                ),
+                dbc.InputGroup(
+                    [
+                        dbc.InputGroupText("N", class_name="text"),
+                        dbc.Input(id="n-samples-input", value=500, type="number", min=50, max=10000, step=10),
+                    ]
+                ),
+            ], class_name="params-input-group"
         ),
         html.Hr(),
-        html.H1("Specific parameters"),
-        dbc.Stack(children=None, id="spec-distn-params"),
+        html.H1("Adjust Threshold"),
+        dbc.Row(
+            [
+                html.Label("Threshold"),
+                dcc.Slider(id="threshold-input", value=0.5, min=0, max=1, step=0.05),
+            ]
+        ),
         html.Hr(),
-        dbc.Row([
-            dbc.Col(dcc.Graph(id="graph-content")),
-            dbc.Col(dbc.Card(id="distn-doc", body=True)),
-        ]),
-        dbc.Alert(children=None, id="alert-message", color="primary"),
+        dbc.Row(
+            [
+                dbc.Col(confusion_matrix_table, style={"align-content": "center"}, width=6),
+                dbc.Col(dcc.Graph(id="violins-plot"), width=6),
+            ]
+        ),
+        dbc.Row(
+            [
+                dbc.Col(dcc.Graph(id="roc-curve"), width=6),
+                dbc.Col(dcc.Graph(id="precision-recall-curve"), width=6),
+            ],
+        ),
         # storage
-        dcc.Store(id="distn-params", storage_type="memory"),
+        dcc.Store(id="classifier", storage_type="memory"),
     ],
     fluid=True,
 )
 
 
-@callback(Output("spec-distn-params", "children"), Input("dropdown-selection", "value"))
-def add_distn_params_to_layout(distn_name):
-    """Dynamically create input elements for each parameter depending on the distribution."""
-    func_gen = getattr(stats, distn_name)
-    if func_gen.shapes is not None:
-        shapes = func_gen.shapes.split(", ")
-        children = [
-            dbc.InputGroup(
-                [
-                    dbc.InputGroupText(shape),
-                    dbc.Input(id={"type": "distn-param", "index": shape}, value=PARAM_DEFAULTS[shape], type="number"),
-                ]
-            )
-            for shape in shapes
-        ]
-        return children
-
-
-def _validate_distn_params(distn_params: dict) -> dict:
-    # get the generator for the distribution sampler
-    func_gen = getattr(stats, distn_params["name"])
-
-    # check that the sampler can be created from the generator
-    try:
-        func = func_gen(**{k: v for k, v in distn_params.items() if k not in ["name", "nbins", "size"]})
-    except TypeError as e:
-        if "_parse_args() missing 1 required positional argument" in str(e):
-            raise
-        if BAD_ARG_MESSAGE in str(e):
-            for arg in ["scale", "loc"]:
-                if f"{BAD_ARG_MESSAGE} '{arg}'" == str(e):
-                    del distn_params[arg]
-            try:
-                func = func_gen(**{k: v for k, v in distn_params.items() if k not in ["name", "nbins", "size"]})
-            except TypeError:
-                raise
-
-    # check that random variable samples can be generater
-    try:
-        _ = func.rvs(size=distn_params["size"], random_state=rng)
-    except (TypeError, ValueError):
-        raise
-    return distn_params
+@callback(
+    Output("classifier", "data"),
+    Input("precision-input", "value"),
+    Input("recall-input", "value"),
+    Input("specificity-input", "value"),
+    Input("n-samples-input", "value"),
+    State("threshold-input", "value"),
+)
+def make_classifier(precision, recall, specificity, n_samples, threshold):
+    settings = ClassifierSettings(
+        precision=precision,
+        recall=recall,
+        specificity=specificity,
+        N=n_samples,
+        prob_distn=beta(0.25, 0.25),
+        threshold=threshold,
+    )
+    classifier = MockClassifier.from_metrics(settings=settings)
+    return classifier.model_dump()
 
 
 @callback(
-    Output("distn-params", "data"),
-    Output("alert-message", "children"),
-    State("dropdown-selection", "value"),
-    Input("distn-size", "value"),
-    Input("distn-loc", "value"),
-    Input("distn-scale", "value"),
-    Input("distn-nbins", "value"),
-    Input({"type": "distn-param", "index": ALL}, "value"),
-    Input({"type": "distn-param", "index": ALL}, "id"),
+    Output("classifier", "data", allow_duplicate=True),
+    Input("threshold-input", "value"),
+    State("classifier", "data"),
+    prevent_initial_call=True,
 )
-def update_distn_params(
-    distn_name, distn_size, distn_loc, distn_scale, distn_nbins, distn_param_values, distn_param_ids
-):
-    distn_params = {
-        "name": distn_name,
-        "size": distn_size,
-        "loc": distn_loc,
-        "scale": distn_scale,
-        "nbins": distn_nbins,
-    }
-    spec_distn_params = {}
-    for param_id, param_value in zip(distn_param_ids, distn_param_values):
-        if param_value is None:
-            return go.Figure(), "Not all params selected"
-        spec_distn_params.setdefault(param_id["index"], param_value)
-    distn_params.update(spec_distn_params)
-    try:
-        distn_params = _validate_distn_params(distn_params)
-    except (ValueError, TypeError) as e:
-        return {}, str(e)
-    return distn_params, None
+def update_classifier(threshold: float, classifier_dict: dict):
+    classifier = MockClassifier(**classifier_dict)
+    classifier.threshold = threshold
+    return classifier.model_dump()
 
 
 @callback(
-    Output("graph-content", "figure"),
-    Output("distn-doc", "children"),
-    Input("distn-params", "data")
+    Output("tbl-tp", "children"),
+    Output("tbl-fp", "children"),
+    Output("tbl-fn", "children"),
+    Output("tbl-tn", "children"),
+    Output("tbl-recall", "children"),
+    Output("tbl-fnr", "children"),
+    Output("tbl-fpr", "children"),
+    Output("tbl-specificity", "children"),
+    Output("tbl-precision", "children"),
+    Output("tbl-for", "children"),
+    Output("tbl-fdr", "children"),
+    Output("tbl-npv", "children"),
+    Input("classifier", "data"),
 )
-def update_graph(distn_params):
-    if distn_params == {}:
-        return go.Figure(), ""
-    distn_name = distn_params.pop("name")
-    nbins = distn_params.pop("nbins")
-    size = distn_params.pop("size")
-    func_gen = getattr(stats, distn_name)
-    func = func_gen(**distn_params)
-    data_sample = func.rvs(size=size, random_state=rng)
-    doc_string = re.split(r"\n\s*\n", func_gen.__doc__)
-    doc_string = [html.P(p.strip()) for p in doc_string]
-    return px.histogram(data_sample, nbins=nbins), doc_string
+def update_table(classifier_dict: dict):
+    classifier = MockClassifier(**classifier_dict)
+    output = (
+        f"TP = {classifier.TP}",
+        f"FP = {classifier.FP}",
+        f"FN = {classifier.FN}",
+        f"TN = {classifier.TN}",
+        f"Recall/Sensitivity/TPR = {classifier.recall:.3f}",
+        f"FNR = {classifier.fnr:.3f}",
+        f"FPR = {classifier.fpr:.3f}",
+        f"Specificity/TNR = {classifier.specificity:.3f}",
+        f"Precision/PPV = {classifier.precision:.3f}",
+        f"FOR = {classifier.fomr:.3f}",
+        f"FDR = {classifier.fdr:.3f}",
+        f"NPV = {classifier.npv:.3f}",
+    )
+    return output
+
+
+@callback(Output("violins-plot", "figure"), Input("classifier", "data"))
+def update_violins(classifier_dict: dict):
+    classifier = MockClassifier(**classifier_dict)
+    return classifier.plot_violins(engine="plotly")
+
+
+@callback(Output("roc-curve", "figure"), Input("classifier", "data"))
+def update_roc_curve(classifier_dict: dict):
+    classifier = MockClassifier(**classifier_dict)
+    return classifier.plot_roc_curve()
+
+
+@callback(Output("precision-recall-curve", "figure"), Input("classifier", "data"))
+def update_precision_recall_curve(classifier_dict: dict):
+    classifier = MockClassifier(**classifier_dict)
+    return classifier.plot_precision_recall_curve()
 
 
 if __name__ == "__main__":

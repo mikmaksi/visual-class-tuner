@@ -1,0 +1,28 @@
+.cm-table .header {
+    background-color: lightblue;
+    font-weight: bold;
+}
+
+.cm-table .row {
+    border-top: 1px solid black;
+}
+
+.cm-table .row:last-child {
+    border-bottom: 1px solid black;
+}
+
+.cm-table .col {
+    border-left: 1px solid black;
+}
+
+.cm-table .col:last-child {
+    border-right: 1px solid black;
+}
+
+.params-input-group {
+  width: 400px;
+}
+
+.params-input-group .text {
+  width: 100px;
+}
