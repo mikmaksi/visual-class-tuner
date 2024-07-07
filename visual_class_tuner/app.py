@@ -14,13 +14,11 @@ from scipy.stats._continuous_distns import _distn_names as cont_distns
 from scipy.stats._discrete_distns import _distn_names as disc_distns
 
 from visual_class_tuner.classes import ClassifierSettings, MockClassifier
-
-# random number generator
-rng = np.random.default_rng()
+from visual_class_tuner import rng, FIG_MARGIN
 
 # create the app
-external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css", "assets/styles.css"]
-app = Dash(external_stylesheets=[dbc.themes.BOOTSTRAP])
+external_stylesheets = [dbc.themes.FLATLY, "assets/styles.css"]
+app = Dash(external_stylesheets=external_stylesheets)
 
 # confusion matrix table layout element
 confusion_matrix_table = {
@@ -59,60 +57,77 @@ confusion_matrix_table = pd.DataFrame(confusion_matrix_table)
 # build the layout
 app.layout = dbc.Container(
     [
-        html.H1("Build the classifier"),
-        dbc.Stack(
-            children=[
-                dbc.InputGroup(
-                    [
-                        dbc.InputGroupText("Precision", class_name="text"),
-                        dbc.Input(id="precision-input", value=0.9, type="number", min=0, max=1, step=0.05),
-                    ]
-                ),
-                dbc.InputGroup(
-                    [
-                        dbc.InputGroupText("Recall", class_name="text"),
-                        dbc.Input(id="recall-input", value=0.9, type="number", min=0, max=1, step=0.05),
-                    ]
-                ),
-                dbc.InputGroup(
-                    [
-                        dbc.InputGroupText("Specificity", class_name="text"),
-                        dbc.Input(id="specificity-input", value=0.9, type="number", min=0, max=1, step=0.05),
-                    ]
-                ),
-                dbc.InputGroup(
-                    [
-                        dbc.InputGroupText("N", class_name="text"),
-                        dbc.Input(id="n-samples-input", value=500, type="number", min=50, max=10000, step=10),
-                    ]
-                ),
-            ], class_name="params-input-group"
+        html.H1("Classifier Performance Visualizer", className="display-4"),
+        html.H2("Define the classifier", className="mb-4"),
+        html.P("Initialize a classifier either from performance metrics and a probability distribution"
+               "for sampling predictions. Alternative, upload arrays corresponding to `y_true` and `y_pred`."),
+        dbc.Col(
+            dbc.Stack(
+                [
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("Precision"),
+                            dbc.Input(id="precision-input", value=0.9, type="number", min=0, max=1, step=0.05),
+                        ]
+                    ),
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("Recall"),
+                            dbc.Input(id="recall-input", value=0.9, type="number", min=0, max=1, step=0.05),
+                        ]
+                    ),
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("Specificity"),
+                            dbc.Input(id="specificity-input", value=0.9, type="number", min=0, max=1, step=0.05),
+                        ]
+                    ),
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("N"),
+                            dbc.Input(id="n-samples-input", value=500, type="number", min=50, max=10000, step=10),
+                        ]
+                    ),
+                ],
+            ),
+            width=6,
         ),
-        html.Hr(),
-        html.H1("Adjust Threshold"),
+        html.H2("Adjust Threshold"),  # TODO: add margin class to this
         dbc.Row(
             [
-                html.Label("Threshold"),
-                dcc.Slider(id="threshold-input", value=0.5, min=0, max=1, step=0.05),
+                html.Label("Classifier threshold"),
+                dcc.Slider(id="threshold-input", value=0.5, min=0, max=1, tooltip={"always_visible": False}),
             ]
         ),
-        html.Hr(),
-        dbc.Row(
-            [
-                dbc.Col(dbc.Table.from_dataframe(confusion_matrix_table), width=6),
-                dbc.Col(dcc.Graph(id="violins-plot"), width=6),
-            ]
-        ),
-        dbc.Row(
-            [
-                dbc.Col(dcc.Graph(id="roc-curve"), width=6),
-                dbc.Col(dcc.Graph(id="precision-recall-curve"), width=6),
-            ],
+        dbc.Col(dbc.Table.from_dataframe(confusion_matrix_table, responsive=True), width=12),
+        dbc.Col(
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [html.H4("Violin plot", className="text-center"), dcc.Graph(id="violins-plot")],
+                        width=12,
+                        md=6,
+                        lg=4,
+                    ),
+                    dbc.Col(
+                        [html.H4("ROC curve", className="text-center"), dcc.Graph(id="roc-curve")], width=12, md=6, lg=4
+                    ),
+                    dbc.Col(
+                        [
+                            html.H4("Precision-recall curve", className="text-center"),
+                            dcc.Graph(id="precision-recall-curve"),
+                        ],
+                        width=12,
+                        md=6,
+                        lg=4,
+                    ),
+                ]
+            ),
+            width=12,
         ),
         # storage
         dcc.Store(id="classifier", storage_type="memory"),
     ],
-    fluid=True,
 )
 
 
@@ -186,19 +201,25 @@ def update_table(classifier_dict: dict):
 @callback(Output("violins-plot", "figure"), Input("classifier", "data"))
 def update_violins(classifier_dict: dict):
     classifier = MockClassifier(**classifier_dict)
-    return classifier.plot_violins(engine="plotly")
+    fig = classifier.plot_violins(engine="plotly")
+    fig = fig.update_layout(margin=FIG_MARGIN)
+    return fig
 
 
 @callback(Output("roc-curve", "figure"), Input("classifier", "data"))
 def update_roc_curve(classifier_dict: dict):
     classifier = MockClassifier(**classifier_dict)
-    return classifier.plot_roc_curve()
+    fig = classifier.plot_roc_curve()
+    fig = fig.update_layout(margin=FIG_MARGIN)
+    return fig
 
 
 @callback(Output("precision-recall-curve", "figure"), Input("classifier", "data"))
 def update_precision_recall_curve(classifier_dict: dict):
     classifier = MockClassifier(**classifier_dict)
-    return classifier.plot_precision_recall_curve()
+    fig = classifier.plot_precision_recall_curve()
+    fig = fig.update_layout(margin=FIG_MARGIN)
+    return fig
 
 
 if __name__ == "__main__":
